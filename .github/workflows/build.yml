@@ -68,8 +68,8 @@ jobs:
 
           // Map platform to GitHub runner
           const runnerMap = {
-            'macos-x64': 'macos-13',
-            'macos-arm64': 'macos-14',
+            'macos-x64': 'macos-15',
+            'macos-arm64': 'macos-15',
             'linux-x64': 'ubuntu-latest',
             'linux-arm64': 'ubuntu-latest',
             'windows-x64': 'windows-latest',
