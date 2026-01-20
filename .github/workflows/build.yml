@@ -11,13 +11,25 @@ on:
   workflow_dispatch:
     inputs:
       platforms:
-        description: 'Platforms to build (comma-separated: macos-x64,linux-x64,windows-x64,macos-arm64,linux-arm64,windows-arm64)'
+        description: 'Platforms to build (comma-separated or "all")'
         required: false
         default: 'all'
       node_versions:
-        description: 'Node versions to build (comma-separated: 16,18,20,22,24)'
+        description: 'Node versions to build (comma-separated or "all")'
         required: false
         default: 'all'
+      create_release:
+        description: 'Create GitHub Release after build'
+        required: false
+        default: 'false'
+        type: choice
+        options:
+          - 'false'
+          - 'true'
+      version:
+        description: 'Release version (e.g., v1.0.0) - required if create_release is true'
+        required: false
+        default: ''
 
 env:
   NODE_VERSION: '20'
@@ -46,11 +58,9 @@ jobs:
           const fs = require('fs');
           const config = JSON.parse(fs.readFileSync('config/build-config.json', 'utf8'));
 
-          // Get inputs from environment (safe pattern)
           const platformInput = process.env.PLATFORMS_INPUT || 'all';
           const nodeInput = process.env.NODE_VERSIONS_INPUT || 'all';
 
-          // Validate inputs - only allow alphanumeric, comma, hyphen
           const validateInput = (input) => /^[a-zA-Z0-9,\-]+$/.test(input) || input === 'all';
 
           if (!validateInput(platformInput) || !validateInput(nodeInput)) {
@@ -66,7 +76,6 @@ jobs:
             ? null
             : nodeInput.split(',').map(n => n.trim());
 
-          // Map platform to GitHub runner
           const runnerMap = {
             'macos-x64': 'macos-15',
             'macos-arm64': 'macos-15',
@@ -159,7 +168,7 @@ jobs:
           "$hash  $binaryName" | Out-File -Encoding utf8 "$binaryName.sha256"
           Get-Content "$binaryName.sha256"
 
-      - name: Test binary (Unix)
+      - name: Test binary (Unix x64)
         if: runner.os != 'Windows' && !contains(matrix.platform, 'arm64')
         env:
           ARTIFACT_NAME: ${{ matrix.artifact_name }}
@@ -168,23 +177,8 @@ jobs:
           chmod +x "dist/mjml-${ARTIFACT_NAME}-node${NODE_VER}"
           echo '<mjml><mj-body><mj-section><mj-column><mj-text>Hello</mj-text></mj-column></mj-section></mj-body></mjml>' | "./dist/mjml-${ARTIFACT_NAME}-node${NODE_VER}" --stdin | head -20
 
-      - name: Test binary (Windows x64)
-        if: runner.os == 'Windows' && matrix.platform == 'windows-x64'
-        env:
-          ARTIFACT_NAME: ${{ matrix.artifact_name }}
-          NODE_VER: ${{ matrix.node_version }}
-        shell: pwsh
-        run: |
-          $mjml = '<mjml><mj-body><mj-section><mj-column><mj-text>Hello</mj-text></mj-column></mj-section></mj-body></mjml>'
-          $mjml | & ".\dist\mjml-$env:ARTIFACT_NAME-node$env:NODE_VER.exe" --stdin | Select-Object -First 20
-
       - name: Upload artifact
         uses: actions/upload-artifact@v4
-        env:
-          PLATFORM: ${{ matrix.platform }}
-          NODE_VER: ${{ matrix.node_version }}
-          ARTIFACT_NAME: ${{ matrix.artifact_name }}
-          EXT: ${{ matrix.extension }}
         with:
           name: mjml-${{ matrix.platform }}-node${{ matrix.node_version }}
           path: |
@@ -277,7 +271,6 @@ jobs:
                 const hash = fs.readFileSync(hashPath, 'utf8').split(/\s+/)[0];
                 const stats = fs.statSync(filePath);
 
-                // Parse platform and node version from artifact name
                 const match = dir.match(/mjml-(.+)-node(\d+)/);
 
                 builds.push({
@@ -309,3 +302,151 @@ jobs:
           name: manifest
           path: dist/manifest.json
           retention-days: 30
+
+  # Create GitHub Release (only when create_release is true)
+  release:
+    needs: [prepare, build, verify]
+    if: github.event.inputs.create_release == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate version input
+        env:
+          VERSION: ${{ github.event.inputs.version }}
+        run: |
+          if [ -z "$VERSION" ]; then
+            echo "Error: version is required when create_release is true"
+            exit 1
+          fi
+          if ! echo "$VERSION" | grep -qE '^v?[0-9]+\.[0-9]+\.[0-9]+'; then
+            echo "Error: Invalid version format. Use format like v1.0.0"
+            exit 1
+          fi
+          echo "Version validated: $VERSION"
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Create ZIP packages
+        run: |
+          mkdir -p release
+
+          for dir in artifacts/*/; do
+            [ -d "$dir" ] || continue
+
+            dir_name=$(basename "$dir")
+            [ "$dir_name" = "manifest" ] && continue
+
+            echo "Packaging: $dir_name"
+
+            for binary in "$dir"*; do
+              [ -f "$binary" ] || continue
+              [[ "$binary" == *.sha256 ]] && continue
+
+              binary_name=$(basename "$binary")
+              zip_name="${binary_name}.zip"
+
+              cd "$dir"
+              zip -9 "../../release/$zip_name" "$binary_name" "${binary_name}.sha256" 2>/dev/null || \
+              zip -9 "../../release/$zip_name" "$binary_name"
+              cd - > /dev/null
+
+              echo "   Created: $zip_name"
+            done
+          done
+
+          echo ""
+          echo "ZIP packages created:"
+          ls -la release/
+
+      - name: Generate checksums
+        run: |
+          cd release
+          sha256sum *.zip > SHA256SUMS.txt
+          echo ""
+          echo "SHA256SUMS.txt:"
+          cat SHA256SUMS.txt
+
+      - name: Generate release notes
+        env:
+          VERSION: ${{ github.event.inputs.version }}
+        run: |
+          cat > release/RELEASE_NOTES.md << 'EOF'
+          # MJML Binary Release
+
+          Standalone MJML binaries - no Node.js installation required.
+
+          ## Downloads
+
+          Each ZIP contains:
+          - Standalone MJML binary
+          - SHA256 checksum file
+
+          ## Platforms
+
+          | Platform | Architecture | File Pattern |
+          |----------|-------------|--------------|
+          | macOS | Intel (x64) | `mjml-darwin-x64-node*.zip` |
+          | macOS | Apple Silicon (arm64) | `mjml-darwin-arm64-node*.zip` |
+          | Linux | x64 | `mjml-linux-x64-node*.zip` |
+          | Linux | arm64 | `mjml-linux-arm64-node*.zip` |
+
+          ## Node.js Versions
+
+          Built with Node.js: 16, 18, 20, 22
+
+          ## Usage
+
+          ```bash
+          # Extract
+          unzip mjml-linux-x64-node20.zip
+
+          # Make executable (Unix)
+          chmod +x mjml-linux-x64-node20
+
+          # Run
+          ./mjml-linux-x64-node20 input.mjml -o output.html
+          ```
+
+          ## Verification
+
+          ```bash
+          shasum -a 256 -c SHA256SUMS.txt
+          ```
+          EOF
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event.inputs.version }}
+          name: MJML Binary ${{ github.event.inputs.version }}
+          body_path: release/RELEASE_NOTES.md
+          draft: false
+          prerelease: ${{ contains(github.event.inputs.version, '-') }}
+          files: |
+            release/*.zip
+            release/SHA256SUMS.txt
+          fail_on_unmatched_files: false
+
+      - name: Release Summary
+        env:
+          VERSION: ${{ github.event.inputs.version }}
+          REPO: ${{ github.repository }}
+        run: |
+          echo ""
+          echo "═══════════════════════════════════════════════════════════"
+          echo "                    Release Complete                        "
+          echo "═══════════════════════════════════════════════════════════"
+          echo ""
+          echo "   Version: $VERSION"
+          echo "   Assets:  $(ls -1 release/*.zip | wc -l) ZIP files"
+          echo ""
+          echo "   URL: https://github.com/$REPO/releases/tag/$VERSION"
+          echo ""
+          echo "═══════════════════════════════════════════════════════════"
