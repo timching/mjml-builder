@@ -1,6 +1,6 @@
 {
   "name": "mjml-builder",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Build MJML binaries for multiple platforms and Node.js versions",
   "main": "src/index.js",
   "bin": {

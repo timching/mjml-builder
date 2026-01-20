@@ -2,34 +2,13 @@ name: Build MJML Binaries
 
 on:
   push:
-    branches: [main, develop]
+    branches: [main]
     paths-ignore:
       - '**.md'
       - 'docs/**'
   pull_request:
     branches: [main]
   workflow_dispatch:
-    inputs:
-      platforms:
-        description: 'Platforms to build (comma-separated or "all")'
-        required: false
-        default: 'all'
-      node_versions:
-        description: 'Node versions to build (comma-separated or "all")'
-        required: false
-        default: 'all'
-      create_release:
-        description: 'Create GitHub Release after build'
-        required: false
-        default: 'false'
-        type: choice
-        options:
-          - 'false'
-          - 'true'
-      version:
-        description: 'Release version (e.g., v1.0.0) - required if create_release is true'
-        required: false
-        default: ''
 
 env:
   NODE_VERSION: '20'
@@ -40,6 +19,8 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       matrix: ${{ steps.set-matrix.outputs.matrix }}
+      version: ${{ steps.get-version.outputs.version }}
+      release_exists: ${{ steps.check-release.outputs.exists }}
     steps:
       - uses: actions/checkout@v4
 
@@ -48,33 +29,33 @@ jobs:
         with:
           node-version: ${{ env.NODE_VERSION }}
 
+      - name: Get version from package.json
+        id: get-version
+        run: |
+          VERSION=$(node -p "require('./package.json').version")
+          echo "version=v${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "📦 Package version: v${VERSION}"
+
+      - name: Check if release already exists
+        id: check-release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.get-version.outputs.version }}
+        run: |
+          if gh release view "$VERSION" --repo "${{ github.repository }}" > /dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "⚠️ Release $VERSION already exists"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+            echo "✅ Release $VERSION does not exist - will create after build"
+          fi
+
       - name: Generate Build Matrix
         id: set-matrix
-        env:
-          PLATFORMS_INPUT: ${{ github.event.inputs.platforms }}
-          NODE_VERSIONS_INPUT: ${{ github.event.inputs.node_versions }}
         run: |
           node << 'EOF'
           const fs = require('fs');
           const config = JSON.parse(fs.readFileSync('config/build-config.json', 'utf8'));
-
-          const platformInput = process.env.PLATFORMS_INPUT || 'all';
-          const nodeInput = process.env.NODE_VERSIONS_INPUT || 'all';
-
-          const validateInput = (input) => /^[a-zA-Z0-9,\-]+$/.test(input) || input === 'all';
-
-          if (!validateInput(platformInput) || !validateInput(nodeInput)) {
-            console.error('Invalid input characters detected');
-            process.exit(1);
-          }
-
-          const selectedPlatforms = platformInput === 'all'
-            ? null
-            : platformInput.split(',').map(p => p.trim());
-
-          const selectedNodes = nodeInput === 'all'
-            ? null
-            : nodeInput.split(',').map(n => n.trim());
 
           const runnerMap = {
             'macos-x64': 'macos-15',
@@ -89,11 +70,9 @@ jobs:
 
           for (const [platform, pConfig] of Object.entries(config.platforms)) {
             if (!pConfig.enabled) continue;
-            if (selectedPlatforms && !selectedPlatforms.includes(platform)) continue;
 
             for (const [nodeVer, nConfig] of Object.entries(config.nodeVersions)) {
               if (!nConfig.enabled || !nConfig.supported) continue;
-              if (selectedNodes && !selectedNodes.includes(nodeVer)) continue;
 
               matrix.include.push({
                 platform,
@@ -108,7 +87,7 @@ jobs:
 
           const output = JSON.stringify(matrix);
           fs.appendFileSync(process.env.GITHUB_OUTPUT, 'matrix=' + output + '\n');
-          console.log('Matrix:', JSON.stringify(matrix, null, 2));
+          console.log('Build matrix:', matrix.include.length, 'targets');
           EOF
 
   # Build binaries
@@ -184,7 +163,7 @@ jobs:
           path: |
             dist/mjml-${{ matrix.artifact_name }}-node${{ matrix.node_version }}${{ matrix.extension }}
             dist/mjml-${{ matrix.artifact_name }}-node${{ matrix.node_version }}${{ matrix.extension }}.sha256
-          retention-days: 30
+          retention-days: 7
 
   # Verify all builds
   verify:
@@ -203,130 +182,53 @@ jobs:
           echo "═══════════════════════════════════════════════════════════"
           echo "                    Hash Verification                       "
           echo "═══════════════════════════════════════════════════════════"
-          echo ""
 
           FAILED=0
+          COUNT=0
 
           for dir in artifacts/*/; do
-            echo "Checking: $(basename "$dir")"
-
             for sha_file in "$dir"*.sha256; do
-              if [ -f "$sha_file" ]; then
-                binary_name=$(basename "$sha_file" .sha256)
-                binary_path="${dir}${binary_name}"
+              [ -f "$sha_file" ] || continue
+              binary_name=$(basename "$sha_file" .sha256)
+              binary_path="${dir}${binary_name}"
 
-                if [ -f "$binary_path" ]; then
-                  expected=$(awk '{print $1}' "$sha_file")
-                  actual=$(sha256sum "$binary_path" | awk '{print $1}')
+              if [ -f "$binary_path" ]; then
+                expected=$(awk '{print $1}' "$sha_file")
+                actual=$(sha256sum "$binary_path" | awk '{print $1}')
+                COUNT=$((COUNT + 1))
 
-                  if [ "$expected" = "$actual" ]; then
-                    echo "   ✅ $binary_name"
-                  else
-                    echo "   ❌ $binary_name"
-                    echo "      Expected: $expected"
-                    echo "      Actual:   $actual"
-                    FAILED=1
-                  fi
+                if [ "$expected" = "$actual" ]; then
+                  echo "✅ $binary_name"
+                else
+                  echo "❌ $binary_name - HASH MISMATCH"
+                  FAILED=1
                 fi
               fi
             done
           done
 
-          echo ""
           echo "═══════════════════════════════════════════════════════════"
+          echo "Verified: $COUNT binaries"
 
           if [ $FAILED -eq 1 ]; then
-            echo "                 ❌ Verification FAILED                    "
+            echo "❌ Verification FAILED"
             exit 1
-          else
-            echo "                 ✅ All hashes verified                    "
           fi
+          echo "✅ All hashes verified"
 
-          echo "═══════════════════════════════════════════════════════════"
-
-      - name: Generate manifest
-        run: |
-          node << 'EOF'
-          const fs = require('fs');
-          const path = require('path');
-
-          const artifactsDir = 'artifacts';
-          const builds = [];
-
-          const dirs = fs.readdirSync(artifactsDir);
-
-          for (const dir of dirs) {
-            const dirPath = path.join(artifactsDir, dir);
-            if (!fs.statSync(dirPath).isDirectory()) continue;
-
-            const files = fs.readdirSync(dirPath);
-
-            for (const file of files) {
-              if (file.endsWith('.sha256')) continue;
-
-              const filePath = path.join(dirPath, file);
-              const hashPath = filePath + '.sha256';
-
-              if (fs.existsSync(hashPath)) {
-                const hash = fs.readFileSync(hashPath, 'utf8').split(/\s+/)[0];
-                const stats = fs.statSync(filePath);
-
-                const match = dir.match(/mjml-(.+)-node(\d+)/);
-
-                builds.push({
-                  name: file,
-                  platform: match ? match[1] : 'unknown',
-                  nodeVersion: match ? match[2] : 'unknown',
-                  hash,
-                  size: stats.size
-                });
-              }
-            }
-          }
-
-          const manifest = {
-            version: require('./package.json').version,
-            buildTime: new Date().toISOString(),
-            commit: process.env.GITHUB_SHA,
-            builds
-          };
-
-          fs.mkdirSync('dist', { recursive: true });
-          fs.writeFileSync('dist/manifest.json', JSON.stringify(manifest, null, 2));
-          console.log('Manifest generated with', builds.length, 'builds');
-          EOF
-
-      - name: Upload manifest
-        uses: actions/upload-artifact@v4
-        with:
-          name: manifest
-          path: dist/manifest.json
-          retention-days: 30
-
-  # Create GitHub Release (only when create_release is true)
+  # Auto-release (only on main, only if release doesn't exist)
   release:
     needs: [prepare, build, verify]
-    if: github.event.inputs.create_release == 'true'
+    if: |
+      github.ref == 'refs/heads/main' &&
+      github.event_name != 'pull_request' &&
+      needs.prepare.outputs.release_exists == 'false'
     runs-on: ubuntu-latest
     permissions:
       contents: write
 
     steps:
       - uses: actions/checkout@v4
-
-      - name: Validate version input
-        env:
-          VERSION: ${{ github.event.inputs.version }}
-        run: |
-          if [ -z "$VERSION" ]; then
-            echo "Error: version is required when create_release is true"
-            exit 1
-          fi
-          if ! echo "$VERSION" | grep -qE '^v?[0-9]+\.[0-9]+\.[0-9]+'; then
-            echo "Error: Invalid version format. Use format like v1.0.0"
-            exit 1
-          fi
-          echo "Version validated: $VERSION"
 
       - name: Download all artifacts
         uses: actions/download-artifact@v4
@@ -339,11 +241,7 @@ jobs:
 
           for dir in artifacts/*/; do
             [ -d "$dir" ] || continue
-
             dir_name=$(basename "$dir")
-            [ "$dir_name" = "manifest" ] && continue
-
-            echo "Packaging: $dir_name"
 
             for binary in "$dir"*; do
               [ -f "$binary" ] || continue
@@ -357,13 +255,9 @@ jobs:
               zip -9 "../../release/$zip_name" "$binary_name"
               cd - > /dev/null
 
-              echo "   Created: $zip_name"
+              echo "📦 $zip_name"
             done
           done
-
-          echo ""
-          echo "ZIP packages created:"
-          ls -la release/
 
       - name: Generate checksums
         run: |
@@ -375,78 +269,68 @@ jobs:
 
       - name: Generate release notes
         env:
-          VERSION: ${{ github.event.inputs.version }}
+          VERSION: ${{ needs.prepare.outputs.version }}
         run: |
-          cat > release/RELEASE_NOTES.md << 'EOF'
-          # MJML Binary Release
+          cat > release/RELEASE_NOTES.md << EOF
+          # MJML Binary $VERSION
 
           Standalone MJML binaries - no Node.js installation required.
 
+          ## Quick Start
+
+          \`\`\`bash
+          # Download and extract
+          curl -L https://github.com/${{ github.repository }}/releases/download/$VERSION/mjml-linux-x64-node20.zip -o mjml.zip
+          unzip mjml.zip
+
+          # Make executable & run
+          chmod +x mjml-linux-x64-node20
+          ./mjml-linux-x64-node20 input.mjml -o output.html
+          \`\`\`
+
           ## Downloads
 
-          Each ZIP contains:
-          - Standalone MJML binary
-          - SHA256 checksum file
-
-          ## Platforms
-
-          | Platform | Architecture | File Pattern |
-          |----------|-------------|--------------|
-          | macOS | Intel (x64) | `mjml-darwin-x64-node*.zip` |
-          | macOS | Apple Silicon (arm64) | `mjml-darwin-arm64-node*.zip` |
-          | Linux | x64 | `mjml-linux-x64-node*.zip` |
-          | Linux | arm64 | `mjml-linux-arm64-node*.zip` |
-
-          ## Node.js Versions
-
-          Built with Node.js: 16, 18, 20, 22
-
-          ## Usage
-
-          ```bash
-          # Extract
-          unzip mjml-linux-x64-node20.zip
-
-          # Make executable (Unix)
-          chmod +x mjml-linux-x64-node20
-
-          # Run
-          ./mjml-linux-x64-node20 input.mjml -o output.html
-          ```
+          | Platform | Architecture | Node 16 | Node 18 | Node 20 | Node 22 |
+          |----------|-------------|---------|---------|---------|---------|
+          | macOS | Intel (x64) | [Download](../../releases/download/$VERSION/mjml-darwin-x64-node16.zip) | [Download](../../releases/download/$VERSION/mjml-darwin-x64-node18.zip) | [Download](../../releases/download/$VERSION/mjml-darwin-x64-node20.zip) | [Download](../../releases/download/$VERSION/mjml-darwin-x64-node22.zip) |
+          | macOS | Apple Silicon | [Download](../../releases/download/$VERSION/mjml-darwin-arm64-node16.zip) | [Download](../../releases/download/$VERSION/mjml-darwin-arm64-node18.zip) | [Download](../../releases/download/$VERSION/mjml-darwin-arm64-node20.zip) | [Download](../../releases/download/$VERSION/mjml-darwin-arm64-node22.zip) |
+          | Linux | x64 | [Download](../../releases/download/$VERSION/mjml-linux-x64-node16.zip) | [Download](../../releases/download/$VERSION/mjml-linux-x64-node18.zip) | [Download](../../releases/download/$VERSION/mjml-linux-x64-node20.zip) | [Download](../../releases/download/$VERSION/mjml-linux-x64-node22.zip) |
+          | Linux | arm64 | [Download](../../releases/download/$VERSION/mjml-linux-arm64-node16.zip) | [Download](../../releases/download/$VERSION/mjml-linux-arm64-node18.zip) | [Download](../../releases/download/$VERSION/mjml-linux-arm64-node20.zip) | [Download](../../releases/download/$VERSION/mjml-linux-arm64-node22.zip) |
 
           ## Verification
 
-          ```bash
+          \`\`\`bash
           shasum -a 256 -c SHA256SUMS.txt
-          ```
+          \`\`\`
+
+          ---
+          *Built from commit ${{ github.sha }}*
           EOF
 
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ github.event.inputs.version }}
-          name: MJML Binary ${{ github.event.inputs.version }}
-          body_path: release/RELEASE_NOTES.md
-          draft: false
-          prerelease: ${{ contains(github.event.inputs.version, '-') }}
-          files: |
-            release/*.zip
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          gh release create "$VERSION" \
+            --repo "${{ github.repository }}" \
+            --title "MJML Binary $VERSION" \
+            --notes-file release/RELEASE_NOTES.md \
+            release/*.zip \
             release/SHA256SUMS.txt
-          fail_on_unmatched_files: false
 
       - name: Release Summary
         env:
-          VERSION: ${{ github.event.inputs.version }}
-          REPO: ${{ github.repository }}
+          VERSION: ${{ needs.prepare.outputs.version }}
         run: |
           echo ""
           echo "═══════════════════════════════════════════════════════════"
-          echo "                    Release Complete                        "
+          echo "                 🎉 Release Created!                        "
           echo "═══════════════════════════════════════════════════════════"
           echo ""
           echo "   Version: $VERSION"
           echo "   Assets:  $(ls -1 release/*.zip | wc -l) ZIP files"
           echo ""
-          echo "   URL: https://github.com/$REPO/releases/tag/$VERSION"
+          echo "   URL: https://github.com/${{ github.repository }}/releases/tag/$VERSION"
           echo ""
           echo "═══════════════════════════════════════════════════════════"
