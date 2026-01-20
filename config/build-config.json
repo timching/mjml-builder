@@ -1,0 +1,120 @@
+{
+  "$schema": "./build-config.schema.json",
+  "_comment": "Build configuration for MJML binaries. Set 'enabled: false' to skip specific builds.",
+
+  "platforms": {
+    "macos-x64": {
+      "enabled": true,
+      "pkgTarget": "macos-x64",
+      "artifactName": "darwin-x64"
+    },
+    "macos-arm64": {
+      "enabled": true,
+      "pkgTarget": "macos-arm64",
+      "artifactName": "darwin-arm64"
+    },
+    "linux-x64": {
+      "enabled": true,
+      "pkgTarget": "linux-x64",
+      "artifactName": "linux-x64"
+    },
+    "linux-arm64": {
+      "enabled": true,
+      "pkgTarget": "linux-arm64",
+      "artifactName": "linux-arm64"
+    },
+    "windows-x64": {
+      "enabled": false,
+      "pkgTarget": "win-x64",
+      "artifactName": "win32-x64",
+      "extension": ".exe"
+    },
+    "windows-arm64": {
+      "enabled": false,
+      "pkgTarget": "win-arm64",
+      "artifactName": "win32-arm64",
+      "extension": ".exe"
+    }
+  },
+
+  "nodeVersions": {
+    "16": {
+      "enabled": true,
+      "pkgTarget": "node16",
+      "supported": true,
+      "lts": true,
+      "codename": "Gallium"
+    },
+    "17": {
+      "enabled": false,
+      "pkgTarget": "node17",
+      "supported": false,
+      "lts": false,
+      "_comment": "Non-LTS version - not supported by pkg"
+    },
+    "18": {
+      "enabled": true,
+      "pkgTarget": "node18",
+      "supported": true,
+      "lts": true,
+      "codename": "Hydrogen"
+    },
+    "19": {
+      "enabled": false,
+      "pkgTarget": "node19",
+      "supported": false,
+      "lts": false,
+      "_comment": "Non-LTS version - not supported by pkg"
+    },
+    "20": {
+      "enabled": true,
+      "pkgTarget": "node20",
+      "supported": true,
+      "lts": true,
+      "codename": "Iron"
+    },
+    "21": {
+      "enabled": false,
+      "pkgTarget": "node21",
+      "supported": false,
+      "lts": false,
+      "_comment": "Non-LTS version - not supported by pkg"
+    },
+    "22": {
+      "enabled": true,
+      "pkgTarget": "node22",
+      "supported": true,
+      "lts": true,
+      "codename": "Jod"
+    },
+    "23": {
+      "enabled": false,
+      "pkgTarget": "node23",
+      "supported": false,
+      "lts": false,
+      "_comment": "Non-LTS version - not supported by pkg"
+    },
+    "24": {
+      "enabled": false,
+      "pkgTarget": "node24",
+      "supported": false,
+      "lts": true,
+      "_comment": "Future LTS - not yet supported by pkg, enable when available"
+    }
+  },
+
+  "output": {
+    "directory": "dist",
+    "binaryPrefix": "mjml",
+    "hashAlgorithm": "sha256",
+    "compressionLevel": 9
+  },
+
+  "build": {
+    "parallel": false,
+    "maxConcurrency": 1,
+    "cleanBeforeBuild": true,
+    "generateHashes": true,
+    "createZip": true
+  }
+}

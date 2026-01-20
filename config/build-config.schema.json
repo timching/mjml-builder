@@ -1,0 +1,114 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "MJML Builder Configuration",
+  "description": "Configuration schema for building MJML binaries across platforms and Node.js versions",
+  "type": "object",
+  "properties": {
+    "platforms": {
+      "type": "object",
+      "description": "Platform-specific build configurations",
+      "additionalProperties": {
+        "type": "object",
+        "properties": {
+          "enabled": {
+            "type": "boolean",
+            "description": "Whether to build for this platform"
+          },
+          "pkgTarget": {
+            "type": "string",
+            "description": "The pkg target identifier"
+          },
+          "artifactName": {
+            "type": "string",
+            "description": "Name used in artifact filename"
+          },
+          "extension": {
+            "type": "string",
+            "description": "File extension for the binary (e.g., .exe for Windows)"
+          }
+        },
+        "required": ["enabled", "pkgTarget", "artifactName"]
+      }
+    },
+    "nodeVersions": {
+      "type": "object",
+      "description": "Node.js version configurations",
+      "additionalProperties": {
+        "type": "object",
+        "properties": {
+          "enabled": {
+            "type": "boolean",
+            "description": "Whether to build for this Node.js version"
+          },
+          "pkgTarget": {
+            "type": "string",
+            "description": "The pkg Node.js target"
+          },
+          "supported": {
+            "type": "boolean",
+            "description": "Whether this version is supported by pkg"
+          },
+          "lts": {
+            "type": "boolean",
+            "description": "Whether this is an LTS release"
+          },
+          "codename": {
+            "type": "string",
+            "description": "Node.js LTS codename"
+          }
+        },
+        "required": ["enabled", "pkgTarget", "supported"]
+      }
+    },
+    "output": {
+      "type": "object",
+      "properties": {
+        "directory": {
+          "type": "string",
+          "description": "Output directory for binaries"
+        },
+        "binaryPrefix": {
+          "type": "string",
+          "description": "Prefix for binary filenames"
+        },
+        "hashAlgorithm": {
+          "type": "string",
+          "enum": ["sha256", "sha512", "md5"],
+          "description": "Hash algorithm for verification"
+        },
+        "compressionLevel": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9,
+          "description": "ZIP compression level"
+        }
+      }
+    },
+    "build": {
+      "type": "object",
+      "properties": {
+        "parallel": {
+          "type": "boolean",
+          "description": "Build targets in parallel"
+        },
+        "maxConcurrency": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Maximum parallel builds"
+        },
+        "cleanBeforeBuild": {
+          "type": "boolean",
+          "description": "Clean output directory before building"
+        },
+        "generateHashes": {
+          "type": "boolean",
+          "description": "Generate hash files for binaries"
+        },
+        "createZip": {
+          "type": "boolean",
+          "description": "Create ZIP archives for releases"
+        }
+      }
+    }
+  }
+}

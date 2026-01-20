@@ -1,0 +1,66 @@
+# Auto detect text files and perform LF normalization
+* text=auto
+
+# JavaScript/Node.js
+*.js text eol=lf
+*.mjs text eol=lf
+*.cjs text eol=lf
+*.json text eol=lf
+
+# Shell scripts
+*.sh text eol=lf
+
+# Batch scripts (Windows)
+*.bat text eol=crlf
+*.cmd text eol=crlf
+*.ps1 text eol=crlf
+
+# Configuration
+*.yml text eol=lf
+*.yaml text eol=lf
+*.toml text eol=lf
+*.ini text eol=lf
+*.cfg text eol=lf
+
+# Documentation
+*.md text eol=lf
+*.txt text eol=lf
+LICENSE text eol=lf
+
+# Web
+*.html text eol=lf
+*.css text eol=lf
+*.mjml text eol=lf
+
+# Git
+.gitattributes text eol=lf
+.gitignore text eol=lf
+
+# GitHub Actions
+.github/**/*.yml text eol=lf
+
+# Binary files - do not modify
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.pdf binary
+*.zip binary
+*.tar binary
+*.gz binary
+*.exe binary
+
+# Linguist overrides for GitHub language statistics
+*.js linguist-language=JavaScript
+*.json linguist-language=JSON
+*.yml linguist-language=YAML
+*.md linguist-documentation
+
+# Mark generated files
+dist/** linguist-generated=true
+package-lock.json linguist-generated=true
+
+# Diff behavior
+*.json diff=json
+*.md diff=markdown

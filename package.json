@@ -1,0 +1,53 @@
+{
+  "name": "mjml-builder",
+  "version": "1.0.0",
+  "description": "Build MJML binaries for multiple platforms and Node.js versions",
+  "main": "src/index.js",
+  "bin": {
+    "mjml-bin": "src/cli.js"
+  },
+  "scripts": {
+    "build": "node scripts/build.js",
+    "build:all": "node scripts/build.js --all",
+    "build:platform": "node scripts/build.js --platform",
+    "verify": "node scripts/verify-hash.js",
+    "package": "node scripts/package-binary.js",
+    "clean": "node scripts/clean.js"
+  },
+  "pkg": {
+    "scripts": "src/**/*.js",
+    "assets": [
+      "node_modules/mjml-preset-core/**/*",
+      "node_modules/mjml-core/**/*",
+      "node_modules/mjml-validator/**/*"
+    ],
+    "outputPath": "dist",
+    "compress": "GZip"
+  },
+  "dependencies": {
+    "mjml": "^4.15.3",
+    "commander": "^12.1.0"
+  },
+  "devDependencies": {
+    "@yao-pkg/pkg": "^5.12.0",
+    "archiver": "^7.0.1",
+    "chalk": "^4.1.2",
+    "ora": "^5.4.1"
+  },
+  "engines": {
+    "node": ">=16.0.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/timching/mjml-builder.git"
+  },
+  "keywords": [
+    "mjml",
+    "binary",
+    "email",
+    "template",
+    "cross-platform"
+  ],
+  "license": "MIT",
+  "author": "timching"
+}

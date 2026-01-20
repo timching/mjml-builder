@@ -1,0 +1,258 @@
+name: Release MJML Binaries
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version tag to release (e.g., v1.0.0)'
+        required: true
+      draft:
+        description: 'Create as draft release'
+        required: false
+        default: 'true'
+        type: boolean
+
+env:
+  NODE_VERSION: '20'
+
+jobs:
+  # Build all binaries first
+  build:
+    uses: ./.github/workflows/build.yml
+    with:
+      platforms: 'all'
+      node_versions: 'all'
+
+  # Create release
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Verify all hashes
+        run: |
+          echo "═══════════════════════════════════════════════════════════"
+          echo "              Pre-Release Hash Verification                 "
+          echo "═══════════════════════════════════════════════════════════"
+          echo ""
+
+          FAILED=0
+          VERIFIED=0
+
+          for dir in artifacts/*/; do
+            [ -d "$dir" ] || continue
+
+            dir_name=$(basename "$dir")
+            [ "$dir_name" = "manifest" ] && continue
+
+            echo "Verifying: $dir_name"
+
+            for sha_file in "$dir"*.sha256; do
+              [ -f "$sha_file" ] || continue
+
+              binary_name=$(basename "$sha_file" .sha256)
+              binary_path="${dir}${binary_name}"
+
+              if [ -f "$binary_path" ]; then
+                expected=$(awk '{print $1}' "$sha_file")
+                actual=$(sha256sum "$binary_path" | awk '{print $1}')
+
+                if [ "$expected" = "$actual" ]; then
+                  echo "   ✅ $binary_name"
+                  VERIFIED=$((VERIFIED + 1))
+                else
+                  echo "   ❌ $binary_name - HASH MISMATCH"
+                  FAILED=1
+                fi
+              fi
+            done
+          done
+
+          echo ""
+          echo "Verified: $VERIFIED binaries"
+          echo ""
+
+          if [ $FAILED -eq 1 ]; then
+            echo "❌ Hash verification failed! Aborting release."
+            exit 1
+          fi
+
+          echo "✅ All hashes verified successfully"
+
+      - name: Create ZIP packages
+        run: |
+          mkdir -p release
+
+          for dir in artifacts/*/; do
+            [ -d "$dir" ] || continue
+
+            dir_name=$(basename "$dir")
+            [ "$dir_name" = "manifest" ] && continue
+
+            echo "Packaging: $dir_name"
+
+            for binary in "$dir"*; do
+              [ -f "$binary" ] || continue
+              [[ "$binary" == *.sha256 ]] && continue
+
+              binary_name=$(basename "$binary")
+              zip_name="${binary_name%.*}.zip"
+              [ "$binary_name" = "${binary_name%.*}" ] && zip_name="${binary_name}.zip"
+
+              # Create zip with binary and hash
+              cd "$dir"
+              zip -9 "../../release/$zip_name" "$binary_name" "${binary_name}.sha256" 2>/dev/null || \
+              zip -9 "../../release/$zip_name" "$binary_name"
+              cd - > /dev/null
+
+              echo "   Created: $zip_name"
+            done
+          done
+
+          echo ""
+          echo "ZIP packages created:"
+          ls -la release/
+
+      - name: Generate checksums file
+        run: |
+          cd release
+          sha256sum *.zip > SHA256SUMS.txt
+          echo ""
+          echo "SHA256SUMS.txt contents:"
+          cat SHA256SUMS.txt
+
+      - name: Generate release notes
+        run: |
+          cat > release/RELEASE_NOTES.md << 'NOTES_EOF'
+          # MJML Binary Release
+
+          ## Downloads
+
+          Each ZIP file contains:
+          - The standalone MJML binary
+          - SHA256 checksum file
+
+          ## Platforms
+
+          | Platform | Architecture | Binary |
+          |----------|-------------|--------|
+          | macOS | x64 (Intel) | `mjml-darwin-x64-node*` |
+          | macOS | arm64 (Apple Silicon) | `mjml-darwin-arm64-node*` |
+          | Linux | x64 | `mjml-linux-x64-node*` |
+          | Linux | arm64 | `mjml-linux-arm64-node*` |
+          | Windows | x64 | `mjml-win32-x64-node*.exe` |
+          | Windows | arm64 | `mjml-win32-arm64-node*.exe` |
+
+          ## Node.js Versions
+
+          Binaries are available for Node.js LTS versions: 16, 18, 20, 22, 24
+
+          ## Verification
+
+          To verify your download:
+
+          ```bash
+          # On macOS/Linux
+          shasum -a 256 -c SHA256SUMS.txt
+
+          # Or for a single file
+          shasum -a 256 mjml-darwin-x64-node20.zip
+          ```
+
+          ```powershell
+          # On Windows PowerShell
+          Get-FileHash mjml-win32-x64-node20.zip -Algorithm SHA256
+          ```
+
+          ## Usage
+
+          ```bash
+          # Make executable (Unix)
+          chmod +x mjml-linux-x64-node20
+
+          # Compile MJML to HTML
+          ./mjml-linux-x64-node20 input.mjml -o output.html
+
+          # From stdin
+          echo '<mjml>...</mjml>' | ./mjml-linux-x64-node20 --stdin
+          ```
+
+          NOTES_EOF
+
+          echo "Release notes generated"
+
+      - name: Determine release parameters
+        id: release-params
+        env:
+          TAG_VERSION: ${{ github.ref_name }}
+          INPUT_VERSION: ${{ github.event.inputs.version }}
+          INPUT_DRAFT: ${{ github.event.inputs.draft }}
+        run: |
+          if [ -n "$INPUT_VERSION" ]; then
+            VERSION="$INPUT_VERSION"
+          else
+            VERSION="$TAG_VERSION"
+          fi
+
+          if [ "$INPUT_DRAFT" = "true" ]; then
+            DRAFT="true"
+          else
+            DRAFT="false"
+          fi
+
+          # Validate version format
+          if ! echo "$VERSION" | grep -qE '^v?[0-9]+\.[0-9]+\.[0-9]+'; then
+            echo "Invalid version format: $VERSION"
+            exit 1
+          fi
+
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "draft=$DRAFT" >> "$GITHUB_OUTPUT"
+          echo "Release version: $VERSION (draft: $DRAFT)"
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.release-params.outputs.version }}
+          name: MJML Binary ${{ steps.release-params.outputs.version }}
+          body_path: release/RELEASE_NOTES.md
+          draft: ${{ steps.release-params.outputs.draft == 'true' }}
+          prerelease: ${{ contains(steps.release-params.outputs.version, '-') }}
+          files: |
+            release/*.zip
+            release/SHA256SUMS.txt
+          fail_on_unmatched_files: false
+
+      - name: Release Summary
+        env:
+          VERSION: ${{ steps.release-params.outputs.version }}
+          REPO: ${{ github.repository }}
+        run: |
+          echo ""
+          echo "═══════════════════════════════════════════════════════════"
+          echo "                    Release Complete                        "
+          echo "═══════════════════════════════════════════════════════════"
+          echo ""
+          echo "   Version:  $VERSION"
+          echo "   Assets:   $(ls -1 release/*.zip | wc -l) ZIP files"
+          echo ""
+          echo "   Release URL: https://github.com/$REPO/releases/tag/$VERSION"
+          echo ""
+          echo "═══════════════════════════════════════════════════════════"

@@ -1,0 +1,311 @@
+name: Build MJML Binaries
+
+on:
+  push:
+    branches: [main, develop]
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      platforms:
+        description: 'Platforms to build (comma-separated: macos-x64,linux-x64,windows-x64,macos-arm64,linux-arm64,windows-arm64)'
+        required: false
+        default: 'all'
+      node_versions:
+        description: 'Node versions to build (comma-separated: 16,18,20,22,24)'
+        required: false
+        default: 'all'
+
+env:
+  NODE_VERSION: '20'
+
+jobs:
+  # Generate build matrix from config
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.set-matrix.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Generate Build Matrix
+        id: set-matrix
+        env:
+          PLATFORMS_INPUT: ${{ github.event.inputs.platforms }}
+          NODE_VERSIONS_INPUT: ${{ github.event.inputs.node_versions }}
+        run: |
+          node << 'EOF'
+          const fs = require('fs');
+          const config = JSON.parse(fs.readFileSync('config/build-config.json', 'utf8'));
+
+          // Get inputs from environment (safe pattern)
+          const platformInput = process.env.PLATFORMS_INPUT || 'all';
+          const nodeInput = process.env.NODE_VERSIONS_INPUT || 'all';
+
+          // Validate inputs - only allow alphanumeric, comma, hyphen
+          const validateInput = (input) => /^[a-zA-Z0-9,\-]+$/.test(input) || input === 'all';
+
+          if (!validateInput(platformInput) || !validateInput(nodeInput)) {
+            console.error('Invalid input characters detected');
+            process.exit(1);
+          }
+
+          const selectedPlatforms = platformInput === 'all'
+            ? null
+            : platformInput.split(',').map(p => p.trim());
+
+          const selectedNodes = nodeInput === 'all'
+            ? null
+            : nodeInput.split(',').map(n => n.trim());
+
+          // Map platform to GitHub runner
+          const runnerMap = {
+            'macos-x64': 'macos-13',
+            'macos-arm64': 'macos-14',
+            'linux-x64': 'ubuntu-latest',
+            'linux-arm64': 'ubuntu-latest',
+            'windows-x64': 'windows-latest',
+            'windows-arm64': 'windows-latest'
+          };
+
+          const matrix = { include: [] };
+
+          for (const [platform, pConfig] of Object.entries(config.platforms)) {
+            if (!pConfig.enabled) continue;
+            if (selectedPlatforms && !selectedPlatforms.includes(platform)) continue;
+
+            for (const [nodeVer, nConfig] of Object.entries(config.nodeVersions)) {
+              if (!nConfig.enabled || !nConfig.supported) continue;
+              if (selectedNodes && !selectedNodes.includes(nodeVer)) continue;
+
+              matrix.include.push({
+                platform,
+                node_version: nodeVer,
+                pkg_target: nConfig.pkgTarget + '-' + pConfig.pkgTarget,
+                runner: runnerMap[platform],
+                artifact_name: pConfig.artifactName,
+                extension: pConfig.extension || ''
+              });
+            }
+          }
+
+          const output = JSON.stringify(matrix);
+          fs.appendFileSync(process.env.GITHUB_OUTPUT, 'matrix=' + output + '\n');
+          console.log('Matrix:', JSON.stringify(matrix, null, 2));
+          EOF
+
+  # Build binaries
+  build:
+    needs: prepare
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJson(needs.prepare.outputs.matrix) }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build binary
+        env:
+          PKG_TARGET: ${{ matrix.pkg_target }}
+          ARTIFACT_NAME: ${{ matrix.artifact_name }}
+          NODE_VER: ${{ matrix.node_version }}
+          EXT: ${{ matrix.extension }}
+        shell: bash
+        run: |
+          mkdir -p dist
+          npx @yao-pkg/pkg . --target "$PKG_TARGET" --output "dist/mjml-${ARTIFACT_NAME}-node${NODE_VER}${EXT}" --compress GZip
+
+      - name: Generate hash (Unix)
+        if: runner.os != 'Windows'
+        env:
+          ARTIFACT_NAME: ${{ matrix.artifact_name }}
+          NODE_VER: ${{ matrix.node_version }}
+          EXT: ${{ matrix.extension }}
+        run: |
+          cd dist
+          BINARY_NAME="mjml-${ARTIFACT_NAME}-node${NODE_VER}${EXT}"
+          shasum -a 256 "$BINARY_NAME" > "$BINARY_NAME.sha256"
+          cat "$BINARY_NAME.sha256"
+
+      - name: Generate hash (Windows)
+        if: runner.os == 'Windows'
+        env:
+          ARTIFACT_NAME: ${{ matrix.artifact_name }}
+          NODE_VER: ${{ matrix.node_version }}
+          EXT: ${{ matrix.extension }}
+        shell: pwsh
+        run: |
+          cd dist
+          $binaryName = "mjml-$env:ARTIFACT_NAME-node$env:NODE_VER$env:EXT"
+          $hash = (Get-FileHash -Algorithm SHA256 $binaryName).Hash.ToLower()
+          "$hash  $binaryName" | Out-File -Encoding utf8 "$binaryName.sha256"
+          Get-Content "$binaryName.sha256"
+
+      - name: Test binary (Unix)
+        if: runner.os != 'Windows' && !contains(matrix.platform, 'arm64')
+        env:
+          ARTIFACT_NAME: ${{ matrix.artifact_name }}
+          NODE_VER: ${{ matrix.node_version }}
+        run: |
+          chmod +x "dist/mjml-${ARTIFACT_NAME}-node${NODE_VER}"
+          echo '<mjml><mj-body><mj-section><mj-column><mj-text>Hello</mj-text></mj-column></mj-section></mj-body></mjml>' | "./dist/mjml-${ARTIFACT_NAME}-node${NODE_VER}" --stdin | head -20
+
+      - name: Test binary (Windows x64)
+        if: runner.os == 'Windows' && matrix.platform == 'windows-x64'
+        env:
+          ARTIFACT_NAME: ${{ matrix.artifact_name }}
+          NODE_VER: ${{ matrix.node_version }}
+        shell: pwsh
+        run: |
+          $mjml = '<mjml><mj-body><mj-section><mj-column><mj-text>Hello</mj-text></mj-column></mj-section></mj-body></mjml>'
+          $mjml | & ".\dist\mjml-$env:ARTIFACT_NAME-node$env:NODE_VER.exe" --stdin | Select-Object -First 20
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        env:
+          PLATFORM: ${{ matrix.platform }}
+          NODE_VER: ${{ matrix.node_version }}
+          ARTIFACT_NAME: ${{ matrix.artifact_name }}
+          EXT: ${{ matrix.extension }}
+        with:
+          name: mjml-${{ matrix.platform }}-node${{ matrix.node_version }}
+          path: |
+            dist/mjml-${{ matrix.artifact_name }}-node${{ matrix.node_version }}${{ matrix.extension }}
+            dist/mjml-${{ matrix.artifact_name }}-node${{ matrix.node_version }}${{ matrix.extension }}.sha256
+          retention-days: 30
+
+  # Verify all builds
+  verify:
+    needs: [prepare, build]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Verify hashes
+        run: |
+          echo "═══════════════════════════════════════════════════════════"
+          echo "                    Hash Verification                       "
+          echo "═══════════════════════════════════════════════════════════"
+          echo ""
+
+          FAILED=0
+
+          for dir in artifacts/*/; do
+            echo "Checking: $(basename "$dir")"
+
+            for sha_file in "$dir"*.sha256; do
+              if [ -f "$sha_file" ]; then
+                binary_name=$(basename "$sha_file" .sha256)
+                binary_path="${dir}${binary_name}"
+
+                if [ -f "$binary_path" ]; then
+                  expected=$(awk '{print $1}' "$sha_file")
+                  actual=$(sha256sum "$binary_path" | awk '{print $1}')
+
+                  if [ "$expected" = "$actual" ]; then
+                    echo "   ✅ $binary_name"
+                  else
+                    echo "   ❌ $binary_name"
+                    echo "      Expected: $expected"
+                    echo "      Actual:   $actual"
+                    FAILED=1
+                  fi
+                fi
+              fi
+            done
+          done
+
+          echo ""
+          echo "═══════════════════════════════════════════════════════════"
+
+          if [ $FAILED -eq 1 ]; then
+            echo "                 ❌ Verification FAILED                    "
+            exit 1
+          else
+            echo "                 ✅ All hashes verified                    "
+          fi
+
+          echo "═══════════════════════════════════════════════════════════"
+
+      - name: Generate manifest
+        run: |
+          node << 'EOF'
+          const fs = require('fs');
+          const path = require('path');
+
+          const artifactsDir = 'artifacts';
+          const builds = [];
+
+          const dirs = fs.readdirSync(artifactsDir);
+
+          for (const dir of dirs) {
+            const dirPath = path.join(artifactsDir, dir);
+            if (!fs.statSync(dirPath).isDirectory()) continue;
+
+            const files = fs.readdirSync(dirPath);
+
+            for (const file of files) {
+              if (file.endsWith('.sha256')) continue;
+
+              const filePath = path.join(dirPath, file);
+              const hashPath = filePath + '.sha256';
+
+              if (fs.existsSync(hashPath)) {
+                const hash = fs.readFileSync(hashPath, 'utf8').split(/\s+/)[0];
+                const stats = fs.statSync(filePath);
+
+                // Parse platform and node version from artifact name
+                const match = dir.match(/mjml-(.+)-node(\d+)/);
+
+                builds.push({
+                  name: file,
+                  platform: match ? match[1] : 'unknown',
+                  nodeVersion: match ? match[2] : 'unknown',
+                  hash,
+                  size: stats.size
+                });
+              }
+            }
+          }
+
+          const manifest = {
+            version: require('./package.json').version,
+            buildTime: new Date().toISOString(),
+            commit: process.env.GITHUB_SHA,
+            builds
+          };
+
+          fs.mkdirSync('dist', { recursive: true });
+          fs.writeFileSync('dist/manifest.json', JSON.stringify(manifest, null, 2));
+          console.log('Manifest generated with', builds.length, 'builds');
+          EOF
+
+      - name: Upload manifest
+        uses: actions/upload-artifact@v4
+        with:
+          name: manifest
+          path: dist/manifest.json
+          retention-days: 30
